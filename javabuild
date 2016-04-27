@@ -11,6 +11,7 @@ _program()
 		javabuild_initialise
 		javabuild_createTemporaryLocations
 		javabuild_clean
+		javabuild_findModules
 		
 		_javabuild_callback()
 		{
@@ -89,7 +90,8 @@ _program_path_find()
 
 _program_commandLine_parseInitialise()
 {
-	javabuild_projectPath_default="${_program_path}"/..
+	# Intended to live in tools/javabuild
+	javabuild_projectPath_default="${_program_path}"/../..
 }
 
 _program_commandLine_helpMessage()
@@ -165,16 +167,12 @@ _program_commandLine_processOptionWithArgument()
 _program_commandLine_handleNonOptions()
 {
     core_variable_array_initialise javabuild_moduleNames
-
+	
     local moduleName
     for moduleName in "$@"
     do
         core_variable_array_append javabuild_moduleNames "$moduleName"
     done
-
-    if core_variable_array_isEmpty javabuild_moduleNames; then
-        core_exitError $core_commandLine_exitCode_USAGE "You haven't specified any module names - are you sure this is what you wanted?"
-    fi
 }
 
 _program_commandLine_validate()

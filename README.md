@@ -7,3 +7,4 @@ Since development is undertaken by this author using IntelliJ, many of the featu
 ## Notes
 
 * The order of entries in a module (`.iml` file) is ignored. Instead, libraries are placed before module dependencies.
+* We ignore `exported=""` and assume all modules are exported. This is more liberal.

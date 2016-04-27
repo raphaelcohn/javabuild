@@ -25,7 +25,13 @@ javabuild_createTemporaryLocations()
 	core_temporaryFiles_newFolderToRemoveOnExit
 	javabuild_emptyFolderPath="$TMP_FOLDER"
 	
+	core_temporaryFiles_newFolderToRemoveOnExit
+	javabuild_modulesFolderPath="$TMP_FOLDER"
+	
 	local TMP_FILE
+	core_temporaryFiles_newFileToRemoveOnExit
+	javabuild_scratchFilePath="$TMP_FILE"
+	
 	core_temporaryFiles_newFileToRemoveOnExit
 	javabuild_moduleDependencyFilePath="$TMP_FILE"
 	
@@ -39,6 +45,34 @@ javabuild_createTemporaryLocations()
 javabuild_clean()
 {
 	_javabuild_remakePath "$javabuild_outputPath"
+}
+
+core_dependency_requires '*' grep sed
+javabuild_findModules()
+{
+	local isEmpty
+    if core_variable_array_isEmpty javabuild_moduleNames; then
+		isEmpty=true
+	else
+		isEmpty=false
+	fi
+	
+	grep '<module ' "$javabuild_projectPath"/.idea/modules.xml | sed -e 's;^.* filepath="\([^ ]*\)".*;\1;g' -e 's;\$PROJECT_DIR\$;'"$javabuild_projectPath"';g' >"$javabuild_scratchFilePath"
+	
+	while IFS= read -r moduleImlFilePath
+	do
+		if ! core_path_isReadableNonEmptyFilePath "$moduleImlFilePath"; then
+			core_exitError $core_commandLine_exitCode_CONFIG "The module '$moduleName' has no module file at '$moduleImlFilePath'"
+		fi
+		local fileName="${moduleImlFilePath##*/}"
+	    local moduleName="${fileName%.*}"
+
+	    if $isEmpty; then
+			core_variable_array_append javabuild_moduleNames "$moduleName"
+		fi
+		
+		printf '%s' "$moduleImlFilePath" >"$javabuild_modulesFolderPath"/"$moduleName"
+	done <"$javabuild_scratchFilePath"
 }
 
 core_dependency_requires '*' grep awk
@@ -69,7 +103,7 @@ _javabuild_addLibraryDependencies()
 }
 
 # https://docs.oracle.com/javase/8/docs/technotes/tools/windows/javac.html
-core_dependency_requires '*' mkdir tr find sed
+core_dependency_requires '*' mkdir tr find sed cat
 javabuild_crossCompileModule()
 {
 	local moduleName="$1"
@@ -81,16 +115,16 @@ javabuild_crossCompileModule()
 		return 0
 	fi
 	
-	local moduleSourceFolderPath="$javabuild_modulePath"/"$moduleName"
-	if ! core_path_isReadableAndSearchableFolderPath "$moduleSourceFolderPath"; then
-		core_exitError $core_commandLine_exitCode_CONFIG "The module '$moduleName' is not present at '$moduleSourceFolderPath'"
-	fi
-	
-	local moduleImlFilePath="$moduleSourceFolderPath"/"$moduleName".iml
+	local moduleImlFilePath="$(cat "$javabuild_modulesFolderPath"/"$moduleName")"
 	if ! core_path_isReadableNonEmptyFilePath "$moduleImlFilePath"; then
 		core_exitError $core_commandLine_exitCode_CONFIG "The module '$moduleName' has no module file at '$moduleImlFilePath'"
 	fi
 	
+	local moduleFolderPath="${moduleImlFilePath%/*}"
+	
+	local pathsWithTrailingColon="$(grep '<sourceFolder ' "$moduleImlFilePath" | sed -e 's;^.* url="\([^ ]*\)".*;\1;g' -e 's;file://\$MODULE_DIR\$;'"$moduleFolderPath"';g' | tr '\n' ':')"
+	local moduleSourceFolderPath="${pathsWithTrailingColon%%:}"
+		
 	local buildingFilePath="$destinationModuleFolderPath"/.building
 	if [ -f "$buildingFilePath" ]; then
 		core_exitError $core_commandLine_exitCode_CONFIG "The module '$moduleName' is in a circular dependency chain"
@@ -99,11 +133,52 @@ javabuild_crossCompileModule()
 	mkdir -m 0755 -p "$destinationModuleFolderPath"
 	printf '' >"$buildingFilePath"
 	
+	local moduleSourcePathsArray
+	local moduleSourcePathsArray_initialised
+	core_variable_array_initialise moduleSourcePathsArray
+	
+	local moduleLibraryPathsArray
+	local moduleLibraryPathsArray_initialised
+	core_variable_array_initialise moduleLibraryPathsArray
+	
 	local libraryNameDependencies
 	local libraryNameDependencies_initialised
 	_javabuild_addLibraryDependencies
 	
-	local moduleLibraryPaths="$javabuild_emptyFolderPath"
+	local moduleNameDependencies
+	local moduleNameDependencies_initialised
+	_javabuild_addModuleDependencies
+	
+	_javabuild_crossCompileModule_iterateModuleDependencies()
+	{
+		local moduleNameDependency="$core_variable_array_element"
+		if [ ! -f "$javabuild_outputPath"/"$moduleNameDependency"/.built ]; then
+			javabuild_crossCompileModule "$moduleNameDependency"
+		fi
+
+		local path
+		
+		while IFS= read -r path
+		do
+			core_variable_array_appendUniquely moduleSourcePathsArray "$path"
+		done <"$javabuild_modulesFolderPath"/"$moduleNameDependency".sources.path
+
+		while IFS= read -r path
+		do
+			core_variable_array_appendUniquely moduleLibraryPathsArray "$path"
+		done <"$javabuild_modulesFolderPath"/"$moduleNameDependency".libraries.path
+		
+		# module compiled classes
+		core_variable_array_appendUniquely moduleLibraryPathsArray "$javabuild_outputPath"/"$moduleNameDependency"/classes
+
+		# module source path(s)
+		local x="$(cat "$javabuild_modulesFolderPath"/"$moduleNameDependency")"
+		core_variable_array_appendUniquely moduleSourcePathsArray "${x%/*}"
+		
+		# module generated sources
+		core_variable_array_appendUniquely moduleSourcePathsArray "$javabuild_outputPath"/"$moduleNameDependency"/generated-sources
+	}
+	core_variable_array_iterate moduleNameDependencies _javabuild_crossCompileModule_iterateModuleDependencies
 	
 	_javabuild_crossCompileModule_iterateLibraryDependencies()
 	{
@@ -132,8 +207,8 @@ javabuild_crossCompileModule()
 					if [ ! -s "$path" ]; then
 						core_exitError $core_commandLine_exitCode_CONFIG "The library '$libraryNameDependency' has no library JAR at '$path'"
 					fi
-					
-					moduleLibraryPaths="${moduleLibraryPaths}:${path}"
+
+					core_variable_array_appendUniquely moduleLibraryPathsArray "$path"
 				;;
 				
 				*)
@@ -146,30 +221,27 @@ javabuild_crossCompileModule()
 	}
 	core_variable_array_iterate libraryNameDependencies _javabuild_crossCompileModule_iterateLibraryDependencies
 	
-	local moduleNameDependencies
-	local moduleNameDependencies_initialised
-	_javabuild_addModuleDependencies
 	
-	local moduleSourcePaths="$javabuild_emptyFolderPath"
+	local moduleLibraryPaths="$(core_variable_array_string moduleLibraryPathsArray ':')"
 	
-	_javabuild_crossCompileModule_iterateModuleDependencies()
+	printf '' >"$javabuild_modulesFolderPath"/"$moduleName".libraries.path
+	_javabuild_crossCompileModule_writeLibraryDependencies()
 	{
-		local moduleNameDependency="$core_variable_array_element"
-		if [ ! -f "$javabuild_outputPath"/"$moduleNameDependency"/.built ]; then
-			javabuild_crossCompileModule "$moduleNameDependency"
-		fi
-
-		local destinationClassFilesFolderPath="$javabuild_outputPath"/"$moduleNameDependency"/classes
-		moduleLibraryPaths="${moduleLibraryPaths}:${destinationClassFilesFolderPath}"
-
-		local moduleSourcePath="$javabuild_modulePath"/"$moduleNameDependency"
-		local destinationGeneratedSourceFilesFolderPath="$javabuild_outputPath"/"$moduleNameDependency"/generated-sources
-		moduleSourcePaths="${moduleSourcePaths}:${moduleSourcePath}:${destinationGeneratedSourceFilesFolderPath}"
+		local path="$core_variable_array_element"
+		printf '%s\n' "$path" >>"$javabuild_modulesFolderPath"/"$moduleName".libraries.path
 	}
-	core_variable_array_iterate moduleNameDependencies _javabuild_crossCompileModule_iterateModuleDependencies
+	core_variable_array_iterate moduleLibraryPathsArray _javabuild_crossCompileModule_writeLibraryDependencies
 	
 	
-	find "$moduleSourceFolderPath" -type 'f' -name '*.java' >"$javabuild_argumentsFilePath"
+	local moduleSourcePaths="$(core_variable_array_string moduleSourcePathsArray ':')"
+	
+	printf '' >"$javabuild_modulesFolderPath"/"$moduleName".sources.path
+	_javabuild_crossCompileModule_writeSourcesDependencies()
+	{
+		local path="$core_variable_array_element"
+		printf '%s\n' "$path" >>"$javabuild_modulesFolderPath"/"$moduleName".sources.path
+	}
+	core_variable_array_iterate moduleSourcePathsArray _javabuild_crossCompileModule_writeSourcesDependencies
 	
 	
 	local destinationClassFilesFolderPath="$javabuild_outputPath"/"$moduleName"/classes
@@ -197,8 +269,10 @@ javabuild_crossCompileModule()
 	else
 		set -- "$@" -nowarn -Xlint:none
 	fi
+	find -L "$moduleSourceFolderPath" -type 'f' -name '*.java' >"$javabuild_argumentsFilePath"
 	
-	javac "$@" '@'$javabuild_argumentsFilePath
+	core_message NOTICE "Compiling module '$moduleName'"
+	javac "$@" '@'"$javabuild_argumentsFilePath"
 	
 	rm "$buildingFilePath"
 	printf '' >"$alreadyBuiltFilePath"
