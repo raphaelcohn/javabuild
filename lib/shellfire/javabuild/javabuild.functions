@@ -1,0 +1,193 @@
+# This file is part of javabuild. It is subject to the licence terms in the COPYRIGHT file found in the top-level directory of this distribution and at https://raw.githubusercontent.com/raphaelcohn/javabuild/master/COPYRIGHT. No part of javabuild, including this file, may be copied, modified, propagated, or distributed except according to the terms contained in the COPYRIGHT file.
+# Copyright © 2014-2015 The developers of javabuild. See the COPYRIGHT file in the top-level directory of this distribution and at https://raw.githubusercontent.com/raphaelcohn/javabuild/master/COPYRIGHT.
+
+
+core_dependency_requires '*' rm mkdir
+_javabuild_remakePath()
+{
+	local path="$1"
+	rm -rf "$path"
+	mkdir -m 0755 -p "$path"
+}
+
+javabuild_initialise()
+{
+	unset CLASSPATH
+	javabuild_debugging=true
+	javabuild_warningsAreErrors=false
+	javabuild_sourceRelease='1.8'
+	javabuild_targetRelease='1.8'
+}
+
+javabuild_createTemporaryLocations()
+{
+	local TMP_FOLDER
+	core_temporaryFiles_newFolderToRemoveOnExit
+	javabuild_emptyFolderPath="$TMP_FOLDER"
+	
+	local TMP_FILE
+	core_temporaryFiles_newFileToRemoveOnExit
+	javabuild_moduleDependencyFilePath="$TMP_FILE"
+	
+	core_temporaryFiles_newFileToRemoveOnExit
+	javabuild_libraryDependencyFilePath="$TMP_FILE"
+	
+	core_temporaryFiles_newFileToRemoveOnExit
+	javabuild_argumentsFilePath="$TMP_FILE"
+}
+
+javabuild_clean()
+{
+	_javabuild_remakePath "$javabuild_outputPath"
+}
+
+core_dependency_requires '*' grep awk
+_javabuild_addModuleDependencies()
+{
+	core_variable_array_initialise moduleNameDependencies
+	grep '<orderEntry type="module" module-name="' "$moduleImlFilePath" | awk -F '"' '{print $4}' >"$javabuild_moduleDependencyFilePath"
+	
+	local moduleNameDependency
+	while IFS= read -r moduleNameDependency
+	do
+		core_variable_array_append moduleNameDependencies "$moduleNameDependency"
+	done <"$javabuild_moduleDependencyFilePath"
+}
+
+core_dependency_requires '*' grep awk
+_javabuild_addLibraryDependencies()
+{
+	core_variable_array_initialise libraryNameDependencies
+	grep '<orderEntry type="library" name="' "$moduleImlFilePath" | awk -F '"' '{print $4}' >"$javabuild_libraryDependencyFilePath"
+	
+	local libraryNameDependency
+	while IFS= read -r libraryNameDependency
+	do
+		core_variable_array_append libraryNameDependencies "$moduleNameDependency"
+	done <"$javabuild_moduleDependencyFilePath"
+}
+
+# https://docs.oracle.com/javase/8/docs/technotes/tools/windows/javac.html
+core_dependency_requires '*' mkdir tr 
+javabuild_crossCompileModule()
+{
+	local moduleName="$1"
+	
+	local destinationModuleFolderPath="$javabuild_outputPath"/"$moduleName"
+	
+	local alreadyBuiltFilePath="$destinationModuleFolderPath"/.built
+	if [ -f "$alreadyBuiltFilePath" ]; then
+		return 0
+	fi
+	
+	local moduleSourceFilePath="$javabuild_modulePath"/"$moduleName"
+	if ! core_path_isReadableAndSearchableFolderPath "$moduleSourceFilePath"; then
+		core_exitError $core_commandLine_exitCode_CONFIG "The module '$moduleName' is not present at '$moduleSourceFilePath'"
+	fi
+	
+	local moduleImlFilePath="$moduleSourceFilePath"/"$moduleName".iml
+	if ! core_path_isReadableNonEmptyFilePath "$moduleImlFilePath"; then
+		core_exitError $core_commandLine_exitCode_CONFIG "The module '$moduleName' has no module file at '$moduleImlFilePath'"
+	fi
+	
+	local buildingFilePath="$destinationModuleFolderPath"/.building
+	if [ -f "$buildingFilePath" ]; then
+		core_exitError $core_commandLine_exitCode_CONFIG "The module '$moduleName' is in a circular dependency chain"
+	fi
+	
+	mkdir -m 0755 -p "$destinationModuleFolderPath"
+	printf '' >"$buildingFilePath"
+	
+	local libraryNameDependencies
+	local libraryNameDependencies_initialised
+	_javabuild_addLibraryDependencies
+	
+	local moduleLibraryPaths="$javabuild_emptyFolderPath"
+	
+	_javabuild_crossCompileModule_iterateLibraryDependencies()
+	{
+		local libraryNameDependency="$core_variable_array_element"
+		
+		local libraryXmlFileName="$(printf '%s' "$libraryNameDependency" tr '-' '_' )"
+		local libraryXmlFilePath="$javabuild_libraryPath"/"$libraryXmlFileName"
+		if ! core_path_isReadableNonEmptyFilePath "$libraryXmlFilePath"; then
+			core_exitError $core_commandLine_exitCode_CONFIG "The library '$libraryNameDependency' has no library file at '$libraryXmlFilePath'"
+		fi
+		
+		tr -d ' \n' <"$libraryXmlFilePath" | sed 's;^.*<CLASSES\>\(.*\)</CLASSES>.*$;\1;g' | sed -e 's;"/>;;g' -e 's;^\<rooturl\=";;g' -e 's;\<rooturl\=";|;g' | tr '|' '\n' >"$javabuild_moduleDependencyFilePath"
+		
+		local libraryFilePath
+		while IFS= read -r libraryFilePath
+		do
+			# Does it start with 'jar:?'
+			case "$libraryFilePath"
+				
+				jar:*)
+					local strippedFront="${libraryFilePath#jar://\$PROJECT_DIR\$*}"
+					# remove trailing '!/'
+					local strippedBack="${strippedFront%\!}"
+					local path="${javabuild_libraryPath}${strippedBack}"
+					
+					moduleLibraryPaths="${moduleLibraryPaths}:${path}"
+				;;
+				
+				*)
+					core_exitError $core_commandLine_exitCode_SOFTWARE "Can not handle library file path '$libraryFilePath'"
+				;;
+				
+			esac
+			
+		done <"$javabuild_moduleDependencyFilePath"
+	}
+	core_variable_array_iterate libraryNameDependencies _javabuild_crossCompileModule_iterateLibraryDependencies
+	
+	local moduleNameDependencies
+	local moduleNameDependencies_initialised
+	_javabuild_addModuleDependencies
+	
+	local moduleSourcePaths="$javabuild_emptyFolderPath"
+	
+	_javabuild_crossCompileModule_iterateModuleDependencies()
+	{
+		local moduleNameDependency="$core_variable_array_element"
+		if [ ! -f "$javabuild_outputPath"/"$moduleNameDependency"/.built ]; then
+			javabuild_crossCompileModule "$moduleNameDependency"
+		fi
+
+		local destinationClassFilesFolderPath="$javabuild_outputPath"/"$moduleNameDependency"/classes
+		moduleLibraryPaths="${moduleLibraryPaths}:${destinationClassFilesFolderPath}"
+
+		local moduleSourcePath="$javabuild_modulePath"/"$moduleNameDependency"
+		local destinationGeneratedSourceFilesFolderPath="$javabuild_outputPath"/"$moduleNameDependency"/generated-sources
+		moduleSourcePaths="${moduleSourcePaths}:${moduleSourcePath}:${destinationGeneratedSourceFilesFolderPath}"
+	}
+	core_variable_array_iterate moduleNameDependencies _javabuild_crossCompileModule_iterateModuleDependencies
+	
+	local destinationClassFilesFolderPath="$javabuild_outputPath"/"$moduleName"/classes
+	mkdir -m 0755 -p "$destinationClassFilesFolderPath"
+	
+	local destinationGeneratedSourceFilesFolderPath="$javabuild_outputPath"/"$moduleName"/generated-sources
+	mkdir -m 0755 -p "$destinationGeneratedSourceFilesFolderPath"
+	
+	set -- -encoding 'UTF-8' -implicit:class -parameters -proc:none \
+		-source "$javabuild_sourceRelease" -target "$javabuild_targetRelease" \
+		-classpath "$moduleLibraryPaths" -sourcepath "$moduleSourcePaths" -s "$destinationGeneratedSourceFilesFolderPath" -d "$destinationClassFilesFolderPath" \
+		-Xprefer:source \
+		-Xpkginfo:always
+	
+	if $javabuild_debugging; then
+		set -- "$@" -g
+	fi
+	
+	if [ $(core_init_verbosity) -gt 1 ]; then
+		set -- "$@" -verbose
+	fi
+	
+	if $javabuild_warningsAreErrors; then
+		set -- "$@" -werror
+	else
+		set -- "$@" -nowarn -Xlint:none
+	fi
+	
+	javac "$@"
+}
