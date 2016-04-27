@@ -180,6 +180,8 @@ javabuild_crossCompileModule()
 	}
 	core_variable_array_iterate moduleNameDependencies _javabuild_crossCompileModule_iterateModuleDependencies
 	
+	core_message NOTICE "Compiling module '$moduleName'"
+	
 	_javabuild_crossCompileModule_iterateLibraryDependencies()
 	{
 		local libraryNameDependency="$core_variable_array_element"
@@ -253,6 +255,7 @@ javabuild_crossCompileModule()
 	set -- -encoding 'UTF-8' -implicit:class -parameters -proc:none \
 		-source "$javabuild_sourceRelease" -target "$javabuild_targetRelease" \
 		-classpath "$moduleLibraryPaths" -sourcepath "$moduleSourcePaths" -s "$destinationGeneratedSourceFilesFolderPath" -d "$destinationClassFilesFolderPath" \
+		-implicit:none \
 		-Xprefer:source \
 		-Xpkginfo:always
 	
@@ -269,9 +272,14 @@ javabuild_crossCompileModule()
 	else
 		set -- "$@" -nowarn -Xlint:none
 	fi
+	
+	if [ "$moduleName" = 'jdk' ]; then
+		core_message WARN "Hack to compile JDK based on module name"
+		set -- "$@" -bootclasspath "$javabuild_emptyFolderPath"
+	fi
+	
 	find -L "$moduleSourceFolderPath" -type 'f' -name '*.java' >"$javabuild_argumentsFilePath"
 	
-	core_message NOTICE "Compiling module '$moduleName'"
 	javac "$@" '@'"$javabuild_argumentsFilePath"
 	
 	rm "$buildingFilePath"
