@@ -58,17 +58,18 @@ core_dependency_requires '*' grep awk
 _javabuild_addLibraryDependencies()
 {
 	core_variable_array_initialise libraryNameDependencies
+	
 	grep '<orderEntry type="library" name="' "$moduleImlFilePath" | awk -F '"' '{print $4}' >"$javabuild_libraryDependencyFilePath"
 	
 	local libraryNameDependency
 	while IFS= read -r libraryNameDependency
 	do
-		core_variable_array_append libraryNameDependencies "$moduleNameDependency"
-	done <"$javabuild_moduleDependencyFilePath"
+		core_variable_array_append libraryNameDependencies "$libraryNameDependency"
+	done <"$javabuild_libraryDependencyFilePath"
 }
 
 # https://docs.oracle.com/javase/8/docs/technotes/tools/windows/javac.html
-core_dependency_requires '*' mkdir tr 
+core_dependency_requires '*' mkdir tr find sed
 javabuild_crossCompileModule()
 {
 	local moduleName="$1"
@@ -80,12 +81,12 @@ javabuild_crossCompileModule()
 		return 0
 	fi
 	
-	local moduleSourceFilePath="$javabuild_modulePath"/"$moduleName"
-	if ! core_path_isReadableAndSearchableFolderPath "$moduleSourceFilePath"; then
-		core_exitError $core_commandLine_exitCode_CONFIG "The module '$moduleName' is not present at '$moduleSourceFilePath'"
+	local moduleSourceFolderPath="$javabuild_modulePath"/"$moduleName"
+	if ! core_path_isReadableAndSearchableFolderPath "$moduleSourceFolderPath"; then
+		core_exitError $core_commandLine_exitCode_CONFIG "The module '$moduleName' is not present at '$moduleSourceFolderPath'"
 	fi
 	
-	local moduleImlFilePath="$moduleSourceFilePath"/"$moduleName".iml
+	local moduleImlFilePath="$moduleSourceFolderPath"/"$moduleName".iml
 	if ! core_path_isReadableNonEmptyFilePath "$moduleImlFilePath"; then
 		core_exitError $core_commandLine_exitCode_CONFIG "The module '$moduleName' has no module file at '$moduleImlFilePath'"
 	fi
@@ -108,25 +109,29 @@ javabuild_crossCompileModule()
 	{
 		local libraryNameDependency="$core_variable_array_element"
 		
-		local libraryXmlFileName="$(printf '%s' "$libraryNameDependency" tr '-' '_' )"
-		local libraryXmlFilePath="$javabuild_libraryPath"/"$libraryXmlFileName"
+		local libraryXmlFileBaseName="$(printf '%s' "$libraryNameDependency" | tr '-' '_' )"
+		local libraryXmlFilePath="$javabuild_projectPath"/.idea/libraries/"$libraryXmlFileBaseName".xml
 		if ! core_path_isReadableNonEmptyFilePath "$libraryXmlFilePath"; then
 			core_exitError $core_commandLine_exitCode_CONFIG "The library '$libraryNameDependency' has no library file at '$libraryXmlFilePath'"
 		fi
 		
-		tr -d ' \n' <"$libraryXmlFilePath" | sed 's;^.*<CLASSES\>\(.*\)</CLASSES>.*$;\1;g' | sed -e 's;"/>;;g' -e 's;^\<rooturl\=";;g' -e 's;\<rooturl\=";|;g' | tr '|' '\n' >"$javabuild_moduleDependencyFilePath"
+		local xxx="$(tr -d ' \n' <"$libraryXmlFilePath")"
+		local strippedOfLeft="${xxx#*<CLASSES>}"
+		local strippedOfRight="${strippedOfLeft%</CLASSES>*}"
+		printf '%s' "$strippedOfRight$strippedOfRight" | sed -e 's;^<rooturl\=";;g' -e 's;"/>$;;g' -e 's;"/><rooturl=";\n;g' -e 's;\.jar!/;.jar;g' >"$javabuild_moduleDependencyFilePath"
 		
 		local libraryFilePath
 		while IFS= read -r libraryFilePath
-		do
+		do	
 			# Does it start with 'jar:?'
-			case "$libraryFilePath"
+			case "$libraryFilePath" in
 				
 				jar:*)
 					local strippedFront="${libraryFilePath#jar://\$PROJECT_DIR\$*}"
-					# remove trailing '!/'
-					local strippedBack="${strippedFront%\!}"
-					local path="${javabuild_libraryPath}${strippedBack}"
+					local path="${javabuild_projectPath}${strippedFront}"
+					if [ ! -s "$path" ]; then
+						core_exitError $core_commandLine_exitCode_CONFIG "The library '$libraryNameDependency' has no library JAR at '$path'"
+					fi
 					
 					moduleLibraryPaths="${moduleLibraryPaths}:${path}"
 				;;
@@ -163,6 +168,10 @@ javabuild_crossCompileModule()
 	}
 	core_variable_array_iterate moduleNameDependencies _javabuild_crossCompileModule_iterateModuleDependencies
 	
+	
+	find "$moduleSourceFolderPath" -type 'f' -name '*.java' >"$javabuild_argumentsFilePath"
+	
+	
 	local destinationClassFilesFolderPath="$javabuild_outputPath"/"$moduleName"/classes
 	mkdir -m 0755 -p "$destinationClassFilesFolderPath"
 	
@@ -189,5 +198,8 @@ javabuild_crossCompileModule()
 		set -- "$@" -nowarn -Xlint:none
 	fi
 	
-	javac "$@"
+	javac "$@" '@'$javabuild_argumentsFilePath
+	
+	rm "$buildingFilePath"
+	printf '' >"$alreadyBuiltFilePath"
 }

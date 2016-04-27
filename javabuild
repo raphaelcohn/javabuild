@@ -5,6 +5,7 @@
 
 _program()
 {   
+	core_usesIn javabuild
     javabuild()
     {
 		javabuild_initialise
@@ -88,9 +89,7 @@ _program_path_find()
 
 _program_commandLine_parseInitialise()
 {
-	javabuild_libraryPath_default="${_program_path}"/../library
-	javabuild_modulePath_default="${_program_path}"/../source
-    javabuild_outputPath_default="${_program_path}"/../out/javabuild
+	javabuild_projectPath_default="${_program_path}"/..
 }
 
 _program_commandLine_helpMessage()
@@ -98,20 +97,20 @@ _program_commandLine_helpMessage()
     _program_commandLine_helpMessage_usage="[OPTION]... -- [modules]..."
     _program_commandLine_helpMessage_description="Compiles Java modules"
     _program_commandLine_helpMessage_options="
-  -l, --library-path PATH      PATH to find libraries in.
+  -p, --project-path PATH     PATH to the project's home
                               Defaults to:-
-                              ${javabuild_modulePath_default}
+                              ${javabuild_projectPath_default}
   -m, --module-path PATH      PATH to find modules in.
                               Defaults to:-
-                              ${javabuild_modulePath_default}
+                              PROJECT-PATH/source
   -o, --output-path PATH      PATH to output to.
                               Defaults to:-
-                              ${javabuild_outputPath_default}"
+                              PROJECT-PATH/out/${_program_name}"
     _program_commandLine_helpMessage_optionsSpacing='     '
     _program_commandLine_helpMessage_configurationKeys="
-  javabuild_libraryPath     Equivalent to --library-path
-  javabuild_modulePath     Equivalent to --module-path
-  javabuild_outputPath     Equivalent to --output-path
+  javabuild_projectPath  Equivalent to --project-path
+  javabuild_modulePath   Equivalent to --module-path
+  javabuild_outputPath   Equivalent to --output-path
 "
     _program_commandLine_helpMessage_examples="
   ${_program_name} -o /some/path
@@ -122,7 +121,7 @@ _program_commandLine_optionExists()
 {
     case "$optionName" in
 
-        l|library-path)
+        p|project-path)
             echo 'yes-argumented'
         ;;
 
@@ -145,9 +144,9 @@ _program_commandLine_processOptionWithArgument()
 {
     case "$optionName" in
 
-        l|library-path)
+        p|project-path)
             core_validate_folderPathReadableAndSearchable $core_commandLine_exitCode_USAGE 'option' "$optionNameIncludingHyphens" "$optionValue"
-            javabuild_libraryPath="$optionValue"
+            javabuild_projectPath="$optionValue"
         ;;
 
         m|module-path)
@@ -170,7 +169,7 @@ _program_commandLine_handleNonOptions()
     local moduleName
     for moduleName in "$@"
     do
-        core_variable_array_append javabuild_moduleNames "$jsonGearBoxFile"
+        core_variable_array_append javabuild_moduleNames "$moduleName"
     done
 
     if core_variable_array_isEmpty javabuild_moduleNames; then
@@ -180,25 +179,29 @@ _program_commandLine_handleNonOptions()
 
 _program_commandLine_validate()
 {
-    if core_variable_isSet javabuild_libraryPath; then
-        core_validate_folderPathReadableAndSearchable $core_commandLine_exitCode_CONFIG 'configuration setting' 'javabuild_libraryPath' "$javabuild_libraryPath"
+    if core_variable_isSet javabuild_projectPath; then
+        core_validate_folderPathReadableAndSearchable $core_commandLine_exitCode_CONFIG 'configuration setting' 'javabuild_projectPath' "$javabuild_projectPath"
     else
-        core_message INFO "Defaulting --module-path to ${javabuild_libraryPath_default}"
-        javabuild_libraryPath="${javabuild_libraryPath_default}"
+        core_message INFO "Defaulting --project-path to ${javabuild_projectPath_default}"
+        javabuild_projectPath="${javabuild_projectPath_default}"
     fi
+	
+	if ! core_path_isReadableAndSearchableFolderPath "$javabuild_projectPath"/.idea/libraries; then
+		core_exitError $core_commandLine_exitCode_CONFIG "There is no .idea/libraries folder under --project-path '$javabuild_projectPath'"
+	fi
 	
     if core_variable_isSet javabuild_modulePath; then
         core_validate_folderPathReadableAndSearchable $core_commandLine_exitCode_CONFIG 'configuration setting' 'javabuild_modulePath' "$javabuild_modulePath"
     else
-        core_message INFO "Defaulting --module-path to ${javabuild_modulePath_default}"
-        javabuild_modulePath="${javabuild_modulePath_default}"
+        core_message INFO "Defaulting --module-path to ${javabuild_projectPath}/source"
+        javabuild_modulePath="${javabuild_projectPath}/source"
     fi
 	
     if core_variable_isSet javabuild_outputPath; then
         core_validate_folderPathIsReadableAndSearchableAndWritableOrCanBeCreated $core_commandLine_exitCode_CONFIG 'configuration setting' 'javabuild_outputPath' "$javabuild_outputPath"
     else
-        core_message INFO "Defaulting --output-path to ${javabuild_outputPath_default}"
-        javabuild_outputPath="${javabuild_outputPath_default}"
+        core_message INFO "Defaulting --output-path to ${javabuild_projectPath}/out/$_program_name"
+        javabuild_outputPath="${javabuild_projectPath}/out/$_program_name"
     fi
 }
 
